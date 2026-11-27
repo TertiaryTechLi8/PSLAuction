@@ -92,12 +92,14 @@ function freshAuction() {
 
 function freshState() {
   const teams = TEAM_DEFS.map(([id, name, short, color]) => ({ id, name, short, color, paddlesUsed: 0 }));
-  const users = [{ id: 'u_host', username: 'host', password: randPass(8), displayName: 'Host', role: 'host', teamId: null }];
+  // Passwords come from environment variables when set (HOST_PASSWORD, FRIEND1_PASSWORD ... FRIEND8_PASSWORD),
+  // so they stay the same even if the host machine restarts and loses its disk.
+  const users = [{ id: 'u_host', username: 'host', password: process.env.HOST_PASSWORD || randPass(8), displayName: 'Host', role: 'host', teamId: null }];
   teams.forEach((t, i) =>
     users.push({
       id: 'u_' + (i + 1),
       username: 'friend' + (i + 1),
-      password: randPass(6),
+      password: process.env['FRIEND' + (i + 1) + '_PASSWORD'] || randPass(6),
       displayName: 'Friend ' + (i + 1),
       role: 'bidder',
       teamId: t.id,
@@ -139,6 +141,11 @@ function loadState() {
   } else {
     state = freshState();
     fresh = true;
+  }
+  // environment passwords always win, so a restart or restored backup can never lock anyone out
+  for (const u of state.users) {
+    const key = u.role === 'host' ? 'HOST_PASSWORD' : u.username.toUpperCase() + '_PASSWORD';
+    if (process.env[key]) u.password = process.env[key];
   }
   if (fresh) writeCredentials();
   persistNow();
@@ -355,6 +362,7 @@ function commit(live = false) {
 
 // ---------------------------------------------------------------- web server
 const app = express();
+app.set('trust proxy', 1); // behind Render's proxy, so req.ip is the visitor and not the proxy
 app.use(express.json({ limit: '8mb' }));
 const flagsDir = (() => {
   try { return path.join(path.dirname(require.resolve('flag-icons/package.json')), 'flags', '4x3'); } catch { return null; }
@@ -378,14 +386,14 @@ function userFromToken(token) {
 
 const loginAttempts = new Map();
 app.post('/api/login', (req, res) => {
-  const ip = req.ip;
+  const ip = req.ip + '|' + String((req.body && req.body.username) || '').trim().toLowerCase();
   const rec = loginAttempts.get(ip) || { n: 0, t: Date.now() };
   if (Date.now() - rec.t > 60000) { rec.n = 0; rec.t = Date.now(); }
   if (rec.n >= 12) return res.status(429).json({ ok: false, error: 'Too many attempts, wait a minute.' });
   rec.n++; loginAttempts.set(ip, rec);
   const { username, password } = req.body || {};
   const u = state.users.find((x) => x.username.toLowerCase() === String(username || '').trim().toLowerCase());
-  if (!u || u.password !== String(password || '')) return res.status(401).json({ ok: false, error: 'Wrong username or password' });
+  if (!u || u.password !== String(password || '').trim()) return res.status(401).json({ ok: false, error: 'Wrong username or password' });
   const token = crypto.randomBytes(24).toString('hex');
   state.sessions[token] = u.id;
   persist();
