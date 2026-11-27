@@ -83,7 +83,7 @@
     ['jm', 'Jamaica'], ['jp', 'Japan'], ['je', 'Jersey'], ['ke', 'Kenya'], ['kw', 'Kuwait'], ['kn', 'Saint Kitts and Nevis'], ['lc', 'Saint Lucia'],
     ['mw', 'Malawi'], ['my', 'Malaysia'], ['mv', 'Maldives'], ['mx', 'Mexico'], ['ma', 'Morocco'], ['mm', 'Myanmar'], ['na', 'Namibia'],
     ['ng', 'Nigeria'], ['gb-nir', 'Northern Ireland'], ['no', 'Norway'], ['om', 'Oman'], ['pg', 'Papua New Guinea'], ['ph', 'Philippines'],
-    ['pl', 'Poland'], ['pt', 'Portugal'], ['qa', 'Qatar'], ['ro', 'Romania'], ['ru', 'Russia'], ['ws', 'Samoa'], ['sa', 'Saudi Arabia'], ['sg', 'Singapore'],
+    ['pl', 'Poland'], ['pt', 'Portugal'], ['qa', 'Qatar'], ['ro', 'Romania'], ['ru', 'Russia'], ['rw', 'Rwanda'], ['ws', 'Samoa'], ['sa', 'Saudi Arabia'], ['sg', 'Singapore'],
     ['kr', 'South Korea'], ['es', 'Spain'], ['vc', 'Saint Vincent and the Grenadines'], ['se', 'Sweden'], ['ch', 'Switzerland'], ['tz', 'Tanzania'],
     ['th', 'Thailand'], ['tt', 'Trinidad and Tobago'], ['tr', 'Turkey'], ['ug', 'Uganda'], ['vu', 'Vanuatu'], ['gb-wls', 'Wales'], ['zm', 'Zambia'],
   ].sort((a, b) => a[1].localeCompare(b[1]));
@@ -92,7 +92,7 @@
   PSL.countryName = (c) => NAME[c] || (c ? c.toUpperCase() : 'Unknown');
 
   const ALIAS = {
-    uk: 'gb-eng', 'united kingdom': 'gb-eng', gb: 'gb-eng', eng: 'gb-eng', usa: 'us', america: 'us', uae: 'ae', emirates: 'ae', holland: 'nl',
+    'united states of america': 'us', uk: 'gb-eng', 'united kingdom': 'gb-eng', gb: 'gb-eng', eng: 'gb-eng', usa: 'us', america: 'us', uae: 'ae', emirates: 'ae', holland: 'nl',
     'west indian': 'wi', windies: 'wi', wi: 'wi', sa: 'za', rsa: 'za', 'south africa': 'za', sl: 'lk', 'sri lanka': 'lk', nz: 'nz', aus: 'au',
     ban: 'bd', pak: 'pk', afg: 'af', ind: 'in', zim: 'zw', ire: 'ie', sco: 'gb-sct', 'hongkong': 'hk', png: 'pg', 'korea': 'kr',
     'st lucia': 'lc', 'st kitts': 'kn', 'st vincent': 'vc', 'trinidad': 'tt', 'antigua': 'ag', 'saudi': 'sa', 'türkiye': 'tr',
