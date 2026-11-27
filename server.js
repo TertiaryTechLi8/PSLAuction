@@ -9,6 +9,7 @@ const path = require('path');
 const fs = require('fs');
 const os = require('os');
 const crypto = require('crypto');
+const zlib = require('zlib');
 const { WebSocketServer } = require('ws');
 
 const PORT = Number(process.env.PORT) || 3000;
@@ -121,23 +122,79 @@ function freshState() {
 
 // ---------------------------------------------------------------- state load / save
 let state;
-function loadState() {
+
+// Optional remote store (Upstash Redis, free tier). Hosts with a temporary disk, like Render's free plan, lose
+// data/state.json on every restart. With UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN set, the whole
+// state (players, signings, results, logins, sessions) is also saved there and reloaded on start.
+const REMOTE_URL = process.env.UPSTASH_REDIS_REST_URL || '';
+const REMOTE_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN || '';
+const REMOTE_KEY = process.env.REMOTE_STATE_KEY || 'psl-auction-state';
+const remoteOn = !!(REMOTE_URL && REMOTE_TOKEN);
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+async function remoteCmd(cmd) {
+  const r = await fetch(REMOTE_URL.replace(/\/+$/, ''), {
+    method: 'POST',
+    headers: { Authorization: 'Bearer ' + REMOTE_TOKEN, 'Content-Type': 'application/json' },
+    body: JSON.stringify(cmd),
+  });
+  let j = {};
+  try { j = await r.json(); } catch {}
+  if (!r.ok || j.error) throw new Error(j.error || 'HTTP ' + r.status);
+  return j.result;
+}
+const pack = (obj) => zlib.gzipSync(JSON.stringify(obj)).toString('base64');
+const unpack = (s) => JSON.parse(zlib.gunzipSync(Buffer.from(s, 'base64')).toString('utf8'));
+let lastRemote = '', remoteTimer = null, remoteBusy = false, remoteDirty = false;
+function scheduleRemote() {
+  if (!remoteOn) return;
+  remoteDirty = true;
+  if (!remoteTimer && !remoteBusy) remoteTimer = setTimeout(flushRemote, 1500);
+}
+async function flushRemote() {
+  clearTimeout(remoteTimer); remoteTimer = null;
+  if (!remoteOn || remoteBusy || !remoteDirty) return;
+  remoteBusy = true; remoteDirty = false;
+  try {
+    const packed = pack(state);
+    if (packed !== lastRemote) { await remoteCmd(['SET', REMOTE_KEY, packed]); lastRemote = packed; }
+  } catch (e) {
+    console.error('Remote save failed (will retry):', e.message);
+    remoteDirty = true;
+  }
+  remoteBusy = false;
+  if (remoteDirty && !remoteTimer) remoteTimer = setTimeout(flushRemote, 4000);
+}
+
+async function loadState() {
   fs.mkdirSync(DATA_DIR, { recursive: true });
   let fresh = false;
-  if (fs.existsSync(STATE_FILE)) {
-    try {
-      state = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8'));
-      // forward compatible defaults
-      state.settings = { ...defaultSettings(), ...state.settings };
-      state.auction = { ...freshAuction(), ...state.auction };
-      state.registrations = state.registrations || [];
-      state.sessions = state.sessions || {};
-      state.pv = (state.pv || 0) + 1;
-    } catch (e) {
-      console.error('Could not read state.json, starting fresh:', e.message);
-      state = freshState();
-      fresh = true;
+  let loaded = null;
+  if (remoteOn) {
+    // If the remote store cannot be reached we stop instead of starting blank and overwriting saved data.
+    let ok = false, lastErr = null;
+    for (let i = 0; i < 4 && !ok; i++) {
+      try {
+        const v = await remoteCmd(['GET', REMOTE_KEY]);
+        if (v) { loaded = unpack(v); lastRemote = v; console.log('  Loaded saved state from the remote store.'); }
+        ok = true;
+      } catch (e) { lastErr = e; await sleep(1500); }
     }
+    if (!ok) {
+      console.error('Cannot reach the remote store (' + (lastErr && lastErr.message) + '). Stopping so saved data is not overwritten. Check the UPSTASH values.');
+      process.exit(1);
+    }
+  }
+  if (!loaded && fs.existsSync(STATE_FILE)) {
+    try { loaded = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8')); } catch (e) { console.error('Could not read state.json, starting fresh:', e.message); }
+  }
+  if (loaded) {
+    state = loaded;
+    // forward compatible defaults
+    state.settings = { ...defaultSettings(), ...state.settings };
+    state.auction = { ...freshAuction(), ...state.auction };
+    state.registrations = state.registrations || [];
+    state.sessions = state.sessions || {};
+    state.pv = (state.pv || 0) + 1;
   } else {
     state = freshState();
     fresh = true;
@@ -147,7 +204,7 @@ function loadState() {
     const key = u.role === 'host' ? 'HOST_PASSWORD' : u.username.toUpperCase() + '_PASSWORD';
     if (process.env[key]) u.password = process.env[key];
   }
-  if (fresh) writeCredentials();
+  writeCredentials();
   persistNow();
 }
 
@@ -173,6 +230,7 @@ function persistNow() {
   } catch (e) {
     console.error('Save failed:', e.message);
   }
+  scheduleRemote();
 }
 
 // ---------------------------------------------------------------- helpers
@@ -902,23 +960,31 @@ setInterval(() => {
 }, 25000);
 
 // ---------------------------------------------------------------- start
-loadState();
-scheduleTimer();
-process.on('SIGINT', () => { persistNow(); process.exit(0); });
-process.on('SIGTERM', () => { persistNow(); process.exit(0); });
+async function shutdown() {
+  persistNow();
+  remoteDirty = true;
+  try { await Promise.race([flushRemote(), sleep(5000)]); } catch {}
+  process.exit(0);
+}
+process.on('SIGINT', shutdown);
+process.on('SIGTERM', shutdown);
 
-server.listen(PORT, '0.0.0.0', () => {
-  const nets = Object.values(os.networkInterfaces()).flat().filter((n) => n && n.family === 'IPv4' && !n.internal);
-  console.log('\n  Tertiary Tech presents PSL (Pakistan Superior League) - Auction server');
-  console.log('  ---------------------------------------------------------------------');
-  console.log(`  Local:    http://localhost:${PORT}`);
-  nets.forEach((n) => console.log(`  Network:  http://${n.address}:${PORT}   <- share this with your friends on the same Wi-Fi`));
-  console.log('\n  Logins (also saved in data/credentials.txt):');
-  state.users.forEach((u) => {
-    const t = getTeam(u.teamId);
-    console.log(`   ${u.role.padEnd(7)} ${u.username.padEnd(9)} ${u.password.padEnd(10)} ${t ? t.name : ''}`);
+loadState().then(() => {
+  scheduleTimer();
+  server.listen(PORT, '0.0.0.0', () => {
+    const nets = Object.values(os.networkInterfaces()).flat().filter((n) => n && n.family === 'IPv4' && !n.internal);
+    console.log('\n  Tertiary Tech presents PSL (Pakistan Superior League) - Auction server');
+    console.log('  ---------------------------------------------------------------------');
+    console.log(`  Local:    http://localhost:${PORT}`);
+    nets.forEach((n) => console.log(`  Network:  http://${n.address}:${PORT}   <- share this with your friends on the same Wi-Fi`));
+    console.log(`  Saved data: ${remoteOn ? 'remote store (survives restarts)' : 'local disk only (lost if the host wipes its disk)'}`);
+    console.log('\n  Logins (also saved in data/credentials.txt):');
+    state.users.forEach((u) => {
+      const t = getTeam(u.teamId);
+      console.log(`   ${u.role.padEnd(7)} ${u.username.padEnd(9)} ${u.password.padEnd(10)} ${t ? t.name : ''}`);
+    });
+    console.log('');
   });
-  console.log('');
 });
 
 module.exports = { app, server };
